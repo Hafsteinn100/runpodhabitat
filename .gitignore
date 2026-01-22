@@ -1,0 +1,8 @@
+*.zip
+*.exe
+*.joblib
+*.pth
+*.npy
+__pycache__/
+data/train/
+.DS_Store
