@@ -5,45 +5,53 @@ from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier, Votin
 from utils import load_data
 
 def train():
-    print("--- STARTING FINAL BOSS TRAINING (Augmented + Spatial) ---")
+    print("--- STARTING GOD MODE TRAINING (RunPod Edition) ---")
     
-    # 1. Load Data (Now with 4x Augmentation)
-    # This calls the load_data() function from utils.py above
+    # 1. Load Data (4x Augmentation)
+    # This creates ~20,000 images with 330 features each.
     X, y = load_data()
     
-    # 2. Define the Experts (Tuned for MAX performance)
+    print(f"Training Data Shape: {X.shape}")
+    print("Initializing Massive Ensemble...")
+
+    # 2. Define the Experts (Unleashed for Cloud)
     
-    print("Initializing Random Forest (1200 trees)...")
+    # Expert 1: Random Forest
+    # 2000 trees is massive, but RunPod RAM can handle it.
     rf = RandomForestClassifier(
-        n_estimators=1200,   # High tree count for the huge dataset
+        n_estimators=2000,   
         max_depth=None,
-        min_samples_leaf=1,  # Learn every detail
-        n_jobs=-1,
+        min_samples_leaf=1,
+        n_jobs=-1,          # Use ALL RunPod vCPUs
         random_state=42
     )
     
-    print("Initializing Extra Trees (1200 trees)...")
+    # Expert 2: Extra Trees
+    # 2000 trees ensures we capture every single texture variation.
     et = ExtraTreesClassifier(
-        n_estimators=1200,
+        n_estimators=2000,
         max_depth=None,
         min_samples_leaf=1,
         bootstrap=False,
-        n_jobs=-1,
+        n_jobs=-1,          # Use ALL RunPod vCPUs
         random_state=42
     )
     
-    print("Initializing Gradient Boosting (Deep Learning Mode)...")
-    # This is the "Secret Weapon". It learns very slowly but very precisely.
+    # Expert 3: Gradient Boosting
+    # 5000 iterations @ 0.01 learning rate = Extreme Precision.
     gb = HistGradientBoostingClassifier(
-        max_iter=3000,       # 3000 rounds of correction
-        learning_rate=0.01,  # Tiny steps for maximum accuracy
-        max_depth=15,        # Deep logic
+        max_iter=5000,       # Learn forever
+        learning_rate=0.01,  # Learn carefully
+        max_depth=15,
         l2_regularization=0.5,
         random_state=42
     )
     
     # 3. Voting
-    print("Stacking models into VotingClassifier...")
+    print("Stacking models into Parallel VotingClassifier...")
+    
+    # CLOUD SETTING: n_jobs=-1
+    # We train all 3 monster models AT THE SAME TIME.
     voting_model = VotingClassifier(
         estimators=[
             ('rf', rf), 
@@ -51,19 +59,18 @@ def train():
             ('gb', gb)
         ],
         voting='soft',
-        n_jobs=-1
+        n_jobs=-1  # Parallel training enabled!
     )
     
     # 4. Train
-    print("Training on Augmented Dataset...")
-    print("WARNING: This may take 15-20 minutes. Do not close it!")
+    print("Training started... (This utilizes 100% of the Cloud CPU)")
     voting_model.fit(X, y)
     
     # 5. Save
     output_path = Path(__file__).parent / "model.joblib"
     print(f"Saving model to {output_path}...")
     joblib.dump(voting_model, output_path, compress=3)
-    print("DONE! You are ready to win.")
+    print("DONE! Download 'model.joblib' and win this thing.")
 
 if __name__ == "__main__":
     train()

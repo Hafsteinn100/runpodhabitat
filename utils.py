@@ -105,7 +105,6 @@ def load_data():
         y.append(label)
         
         # 2. Rotate 90 deg
-        # axes=(1,2) rotates the 35x35 spatial dimensions
         p90 = np.rot90(patch, k=1, axes=(1, 2))
         X.append(extract_features(p90))
         y.append(label)
@@ -120,7 +119,7 @@ def load_data():
         X.append(extract_features(p270))
         y.append(label)
         
-    X = np.array(X)
+    X = np.array(X, dtype=np.float32) # Memory Optimization
     y = np.array(y)
     
     print(f"Final Augmented Dataset Shape: {X.shape}")
