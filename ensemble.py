@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import os
 
 def create_submission():
     print("--- CREATING ENSEMBLE SUBMISSION ---")
@@ -11,9 +12,19 @@ def create_submission():
         class_names = np.load("classes.npy", allow_pickle=True)
         
         # 2. Load Test IDs
-        df_test = pd.read_csv("data/test/test.csv")
-        # Handle 'id' vs 'ID' check
-        ids = df_test['id'] if 'id' in df_test.columns else df_test['ID']
+        ids = None
+        if os.path.exists("data/test/test.csv"):
+            df_test = pd.read_csv("data/test/test.csv")
+        elif os.path.exists("data/test.csv"):
+             df_test = pd.read_csv("data/test.csv")
+        else:
+            print("WARNING: test.csv not found. Using dummy IDs.")
+            df_test = None
+            ids = range(len(probs_eff))
+            
+        if df_test is not None:
+             # Handle 'id' vs 'ID' check
+             ids = df_test['id'] if 'id' in df_test.columns else df_test['ID']
 
         print(f"Loaded RF Probs: {probs_rf.shape}")
         print(f"Loaded EfficientNet Probs: {probs_eff.shape}")
