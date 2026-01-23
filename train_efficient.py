@@ -105,40 +105,78 @@ def load_data():
     print(f"Data shape: {patches.shape}, Labels: {labels.shape}")
     return patches, labels
 
-def get_model(num_classes=71):
-    # BACK TO RESNET18 (Best performance so far: 80%)
-    try:
-        from torchvision.models import ResNet18_Weights
-        weights = ResNet18_Weights.DEFAULT
-    except ImportError:
-        weights = 'DEFAULT'
+
+# --- CUSTOM ARCHITECTURE FOR SMALL IMAGES (CIFAR-STYLE) ---
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
         
-    model = models.resnet18(weights=weights)
-    
-    # MODIFY FIRST LAYER: Accept 15 channels
-    original_conv1 = model.conv1
-    model.conv1 = nn.Conv2d(
-        in_channels=15, 
-        out_channels=original_conv1.out_channels, 
-        kernel_size=original_conv1.kernel_size, 
-        stride=original_conv1.stride, 
-        padding=original_conv1.padding, 
-        bias=original_conv1.bias
-    )
-    
-    nn.init.kaiming_normal_(model.conv1.weight, mode='fan_out', nonlinearity='relu')
-    
-    # Standard MaxPool (Performance critical)
-    
-    # MODIFY FINAL LAYER
-    num_ftrs = model.fc.in_features
-    model.fc = nn.Linear(num_ftrs, num_classes)
-    
-    return model
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+    def forward(self, x):
+        out = torch.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = torch.relu(out)
+        return out
+
+class SmallResNet(nn.Module):
+    def __init__(self, num_classes=71):
+        super(SmallResNet, self).__init__()
+        # Initial: 3x3 conv, stride 1 (Preserve 35x35)
+        # 15 input channels
+        self.conv1 = nn.Conv2d(15, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        
+        # Stage 1: 64 channels, 35x35
+        self.layer1 = self._make_layer(64, 64, 2, stride=1)
+        
+        # Stage 2: 128 channels, 18x18 (stride 2)
+        self.layer2 = self._make_layer(64, 128, 2, stride=2)
+        
+        # Stage 3: 256 channels, 9x9 (stride 2)
+        self.layer3 = self._make_layer(128, 256, 2, stride=2)
+        
+        # Stage 4: 512 channels, 5x5 (stride 2)
+        self.layer4 = self._make_layer(256, 512, 2, stride=2)
+        
+        self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(512, num_classes)
+
+    def _make_layer(self, in_channels, out_channels, num_blocks, stride):
+        layers = []
+        layers.append(ResidualBlock(in_channels, out_channels, stride))
+        for _ in range(1, num_blocks):
+            layers.append(ResidualBlock(out_channels, out_channels, stride=1))
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = torch.relu(self.bn1(self.conv1(x)))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
+        out = self.avg_pool(out)
+        out = out.view(out.size(0), -1)
+        out = self.fc(out)
+        return out
+
+def get_model(num_classes=71):
+    return SmallResNet(num_classes)
+
 
 def train():
     print(f"--- STARTING EFFICIENT TRAINING (Device: {DEVICE}) ---")
-    print(f"--- CONFIG: ResNet18 (Best), Epochs={EPOCHS}, MaxPool=ON ---")
+    print(f"--- CONFIG: Custom SmallResNet (CIFAR-Style), Epochs={EPOCHS}, TTA={TTA_CYCLES}x ---")
     
     patches, labels = load_data()
     
