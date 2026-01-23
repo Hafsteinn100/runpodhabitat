@@ -26,7 +26,7 @@ def load_data():
     
     # Load labels
     df = pd.read_csv(LABELS_FILE)
-    y = df['Label'].values
+    y = df['vistgerd_idx'].values
     
     # Check alignment
     if len(X) != len(y):
