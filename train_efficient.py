@@ -56,15 +56,57 @@ def load_data():
     base_dir = Path(__file__).parent / "data"
     print("Loading data...")
     
-    # Try looking in 'train' subdir first (as seen in file structure)
-    p1_path = base_dir / "train" / "patches_part1.npy"
-    p2_path = base_dir / "train" / "patches_part2.npy"
-    csv_path = base_dir / "train.csv"
+    # Robust path finding
+    possible_roots = ["data/train", "data", "."]
+    p1_path = None
+    p2_path = None
+    csv_path = None
     
-    # Fallback to current directory logic if needed, but structure suggested data/train/
-    if not p1_path.exists():
-        p1_path = base_dir / "patches_part1.npy"
-        p2_path = base_dir / "patches_part2.npy"
+    for root in possible_roots:
+        p1 = base_dir / root / "patches_part1.npy"
+        # Check absolute or relative calc
+        if not p1.exists():
+            # Try treating root as direct path segment if base_dir is weird
+            p1 = Path(root) / "patches_part1.npy"
+            
+        if p1.exists():
+            p1_path = p1
+            # Recalculate p2 based on successful p1 root
+            p2_path = p1.parent / "patches_part2.npy"
+            print(f"Found data in: {p1.parent}")
+            break
+            
+    if p1_path is None:
+        # Last ditch check for raw strings suitable for different OS
+        if os.path.exists("data/train/patches_part1.npy"):
+             p1_path = "data/train/patches_part1.npy"
+             p2_path = "data/train/patches_part2.npy"
+        elif os.path.exists("patches_part1.npy"):
+             p1_path = "patches_part1.npy"
+             p2_path = "patches_part2.npy"
+        else:
+             raise FileNotFoundError("Could not find patches_part1.npy")
+
+    # Finalize paths as Path objects or strings
+    # Load Image Data
+    part1 = np.load(str(p1_path))
+    part2 = np.load(str(p2_path))
+    
+    # Find CSV
+    for root in possible_roots:
+        c = base_dir / root / "train.csv"
+        if not c.exists():
+            c = Path(root) / "train.csv"
+            
+        if c.exists():
+            csv_path = c
+            break
+            
+    if csv_path is None:
+         if os.path.exists("train.csv"):
+             csv_path = "train.csv"
+         else:
+             raise FileNotFoundError("Could not find train.csv")
     
     part1 = np.load(p1_path)
     part2 = np.load(p2_path)
