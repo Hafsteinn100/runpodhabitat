@@ -96,10 +96,10 @@ def train():
     print("Initializing Fast Ensemble...")
     
     # Random Forest: Reliable, Parallel (n_jobs=-1 uses all cores)
-    rf = RandomForestClassifier(n_estimators=200, n_jobs=-1, random_state=42)
+    rf = RandomForestClassifier(n_estimators=800, n_jobs=-1, random_state=42)
     
     # Extra Trees: Faster than Random Forest, reduces variance
-    et = ExtraTreesClassifier(n_estimators=200, n_jobs=-1, random_state=42)
+    et = ExtraTreesClassifier(n_estimators=800, n_jobs=-1, random_state=42)
     
     # HistGradientBoosting: The Speed Demon (Sklearn's version of LightGBM)
     hgb = HistGradientBoostingClassifier(max_iter=150, random_state=42)
