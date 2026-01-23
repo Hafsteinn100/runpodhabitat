@@ -35,8 +35,8 @@ def train_rf():
     X_test_flat = X_test.reshape(X_test.shape[0], -1)
 
     # 3. Train
-    print("Training Random Forest (800 trees)...")
-    clf = RandomForestClassifier(n_estimators=800, n_jobs=-1, random_state=42)
+    print("Training Random Forest (200 trees)...")
+    clf = RandomForestClassifier(n_estimators=200, n_jobs=-1, random_state=42)
     clf.fit(X_flat, y_enc)
     
     print("Training complete. Starting TTA Prediction...")
