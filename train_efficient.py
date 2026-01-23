@@ -12,23 +12,18 @@ import torchvision.models as models
 from torch.cuda.amp import autocast, GradScaler
 
 # --- CONFIGURATION (optimized for speed/accuracy) ---
-BATCH_SIZE = 128  # Larger batch for GPU efficiency
-EPOCHS = 50       # Increased from 20 to 50 (User said 20 was very fast)
+BATCH_SIZE = 128
+EPOCHS = 50
 LEARNING_RATE = 0.001
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-NUM_WORKERS = os.cpu_count()  # Maximize data loading speed
+NUM_WORKERS = os.cpu_count()
 PIN_MEMORY = True if torch.cuda.is_available() else False
-TTA_CYCLES = 4    # Test Time Augmentation (averaged predictions)
-
+TTA_CYCLES = 4
 
 class HabitatDataset(Dataset):
     def __init__(self, patches: np.ndarray, labels: np.ndarray, transform=None):
-        # Data is already float32. We normalize on the fly or just assume simple scaling.
-        # For speed, we'll do simple scaling here if needed.
-        # Based on stats (mean ~1241, std ~1208), we standardize.
         self.patches = (patches - 1241.1) / (1208.9 + 1e-6)
         
-        # Convert to torch tensor (Channels First: N, 15, 35, 35)
         self.patches = torch.from_numpy(self.patches).float()
         self.labels = torch.from_numpy(labels).long()
         self.transform = transform
@@ -40,25 +35,31 @@ class HabitatDataset(Dataset):
         patch = self.patches[idx]
         label = self.labels[idx]
         
-        # GPU-friendly Augmentation (doing it here on CPU might be a bottleneck, 
-        # but for simple flips it's fine). 
         if self.transform:
+            # Stronger Augmentation Strategy
+            # 1. Flips
             if torch.rand(1) < 0.5:
-                patch = torch.flip(patch, [-1]) # Horizontal
+                patch = torch.flip(patch, [-1])
             if torch.rand(1) < 0.5:
-                patch = torch.flip(patch, [-2]) # Vertical
-            # Random 90-degree rotations
+                patch = torch.flip(patch, [-2])
+            
+            # 2. Rotations (90 deg)
             k = torch.randint(0, 4, (1,)).item()
             if k > 0:
                 patch = torch.rot90(patch, k, [-2, -1])
                 
+            # 3. Fine Affine (Rotation +/- 15, Scale 0.9-1.1) - simulated
+            # Doing full affine on tensors without torchvision.transforms.functional is tricky roughly
+            # but we can rely on cutmix or just strict geometry. 
+            # Let's stick to simple geometry for speed, but add Cutout/Dropout logic?
+            # Actually, let's keep it simple. The ResNet34 capacity is the main driver + LabelSmoothing.
+            
         return patch, label
 
 def load_data():
     base_dir = Path(__file__).parent / "data"
     print("Loading data...")
     
-    # Robust path finding
     possible_roots = ["data/train", "data", "."]
     p1_path = None
     p2_path = None
@@ -66,20 +67,15 @@ def load_data():
     
     for root in possible_roots:
         p1 = base_dir / root / "patches_part1.npy"
-        # Check absolute or relative calc
         if not p1.exists():
-            # Try treating root as direct path segment if base_dir is weird
             p1 = Path(root) / "patches_part1.npy"
-            
         if p1.exists():
             p1_path = p1
-            # Recalculate p2 based on successful p1 root
             p2_path = p1.parent / "patches_part2.npy"
             print(f"Found data in: {p1.parent}")
             break
             
     if p1_path is None:
-        # Last ditch check for raw strings suitable for different OS
         if os.path.exists("data/train/patches_part1.npy"):
              p1_path = "data/train/patches_part1.npy"
              p2_path = "data/train/patches_part2.npy"
@@ -90,16 +86,13 @@ def load_data():
              raise FileNotFoundError("Could not find patches_part1.npy")
 
     # Finalize paths as Path objects or strings
-    # Load Image Data
     part1 = np.load(str(p1_path))
     part2 = np.load(str(p2_path))
     
-    # Find CSV
     for root in possible_roots:
         c = base_dir / root / "train.csv"
         if not c.exists():
             c = Path(root) / "train.csv"
-            
         if c.exists():
             csv_path = c
             break
@@ -115,25 +108,24 @@ def load_data():
     patches = np.concatenate([part1, part2], axis=0)
     
     labels_df = pd.read_csv(csv_path)
-    # Using the corrected column name
     labels = labels_df["vistgerd_idx"].values
         
     print(f"Data shape: {patches.shape}, Labels: {labels.shape}")
     return patches, labels
 
-
 def get_model(num_classes=71):
-    # Load ResNet18 (lightweight, standard)
+    # UPGRADE: ResNet34 (Deeper, better features)
     try:
-        from torchvision.models import ResNet18_Weights
-        weights = ResNet18_Weights.DEFAULT
+        from torchvision.models import ResNet34_Weights
+        weights = ResNet34_Weights.DEFAULT
     except ImportError:
-        weights = 'DEFAULT' # Older torch versions
+        weights = 'DEFAULT'
         
-    model = models.resnet18(weights=weights)
+    # Switch to ResNet34
+    from torchvision.models import resnet34
+    model = resnet34(weights=weights)
     
-    # MODIFY FIRST LAYER: Accept 15 channels instead of 3
-    # We keep the spatial structure (kernel size 7, stride 2, padding 3)
+    # MODIFY FIRST LAYER: Accept 15 channels
     original_conv1 = model.conv1
     model.conv1 = nn.Conv2d(
         in_channels=15, 
@@ -144,13 +136,10 @@ def get_model(num_classes=71):
         bias=original_conv1.bias
     )
     
-    # Initialize the new layer's weights
     nn.init.kaiming_normal_(model.conv1.weight, mode='fan_out', nonlinearity='relu')
     
-    # CRITICAL CHANGE: Remove MaxPool
-    # For 35x35 images, the initial MaxPool reduces it to 17x17 too fast.
-    # By removing it (Identity), we keep more spatial detail.
-    model.maxpool = nn.Identity()
+    # RESTORED MAXPOOL (Removing it hurt performance)
+    # Standard ResNet downsampling is robust.
     
     # MODIFY FINAL LAYER
     num_ftrs = model.fc.in_features
@@ -160,9 +149,8 @@ def get_model(num_classes=71):
 
 def train():
     print(f"--- STARTING EFFICIENT TRAINING (Device: {DEVICE}) ---")
-    print(f"--- CONFIG: Epochs={EPOCHS}, MaxPool=OFF (Better for 35x35), TTA={TTA_CYCLES}x ---")
+    print(f"--- CONFIG: ResNet34, Epochs={EPOCHS}, LabelSmoothing=0.1 ---")
     
-    # 1. Prepare Data
     patches, labels = load_data()
     
     dataset_size = len(patches)
@@ -177,35 +165,25 @@ def train():
     val_dataset = HabitatDataset(patches[val_indices], labels[val_indices], transform=False)
     
     train_loader = DataLoader(
-        train_dataset, 
-        batch_size=BATCH_SIZE, 
-        shuffle=True, 
-        num_workers=NUM_WORKERS, 
-        pin_memory=PIN_MEMORY
+        train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
+        num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY
     )
     val_loader = DataLoader(
-        val_dataset, 
-        batch_size=BATCH_SIZE, 
-        shuffle=False, 
-        num_workers=NUM_WORKERS, 
-        pin_memory=PIN_MEMORY
+        val_dataset, batch_size=BATCH_SIZE, shuffle=False, 
+        num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY
     )
     
-    # 2. Setup Model & Optimization
     model = get_model(num_classes=71).to(DEVICE)
     
     optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-2)
     scheduler = optim.lr_scheduler.OneCycleLR(
-        optimizer, 
-        max_lr=LEARNING_RATE, 
-        steps_per_epoch=len(train_loader), 
-        epochs=EPOCHS
+        optimizer, max_lr=LEARNING_RATE, steps_per_epoch=len(train_loader), epochs=EPOCHS
     )
     
-    criterion = nn.CrossEntropyLoss()
+    # UPGRADE: Label Smoothing (Helps generalization significantly)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     scaler = GradScaler() 
     
-    # 3. Training Loop
     best_acc = 0.0
     start_time = time.time()
     
@@ -236,9 +214,6 @@ def train():
         epoch_loss = running_loss / len(train_dataset)
         epoch_acc = 100. * correct / total
         
-        # Validation with TTA (Test Time Augmentation)
-        # To save time, we only do TTA on the confirmation steps or final model save?
-        # Let's do standard validation for speed in the loop.
         model.eval()
         val_correct = 0
         val_total = 0
