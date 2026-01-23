@@ -54,12 +54,41 @@ def train_rf():
     final_probs = (probs_orig + probs_flip) / 2.0
     
     # Save Probabilities
+    # Save Probabilities
     np.save("probs_rf.npy", final_probs)
     
     # Save Classes (needed for the ensemble script to know the names)
     np.save("classes.npy", le.classes_)
     
-    print("Saved 'probs_rf.npy' and 'classes.npy' for ensemble.")
+    # --- GENERATE SUBMISSION CSV (For standalone RF submission) ---
+    print("Generating 'submission_rf.csv' (Pure RF)...")
+    
+    # Get IDs
+    ids = None
+    if os.path.exists("data/test/test.csv"):
+        df_test = pd.read_csv("data/test/test.csv")
+    elif os.path.exists("data/test.csv"):
+        df_test = pd.read_csv("data/test.csv")
+    else:
+        print("WARNING: test.csv not found for IDs. Using dummy IDs.")
+        df_test = None
+        ids = range(len(final_probs))
+        
+    if df_test is not None:
+         ids = df_test['id'] if 'id' in df_test.columns else df_test['ID']
+         
+    # Argmax to get class indices
+    final_preds_idx = np.argmax(final_probs, axis=1)
+    # Convert to original labels
+    final_labels = le.inverse_transform(final_preds_idx)
+    
+    submission = pd.DataFrame({
+        'ID': ids,
+        'label': final_labels
+    })
+    submission.to_csv("submission_rf.csv", index=False)
+    
+    print("SUCCESS: Saved 'probs_rf.npy' (for ensemble) AND 'submission_rf.csv' (for direct submission).")
 
 if __name__ == "__main__":
     train_rf()
