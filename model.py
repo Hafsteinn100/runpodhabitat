@@ -72,27 +72,30 @@ class SmallResNet(nn.Module):
 model_cnn = None
 model_et = None
 
-# 1. Load CNN (ResNet18)
+# 1. Load CNN (EfficientNet-B0)
 try:
     if MODEL_PTH.exists():
         print(f"Loading CNN from {MODEL_PTH}...")
         try:
-            from torchvision.models import ResNet18_Weights
-            weights = ResNet18_Weights.DEFAULT
+            from torchvision.models import EfficientNet_B0_Weights
+            weights = EfficientNet_B0_Weights.DEFAULT
+            p_model = models.efficientnet_b0(weights=weights)
         except:
-             weights = 'DEFAULT'
+             p_model = models.efficientnet_b0(pretrained=True)
              
-        p_model = models.resnet18(weights=weights)
-        original_conv1 = p_model.conv1
-        p_model.conv1 = nn.Conv2d(
-            in_channels=15, 
-            out_channels=original_conv1.out_channels, 
-            kernel_size=original_conv1.kernel_size, 
-            stride=original_conv1.stride, 
-            padding=original_conv1.padding, 
-            bias=original_conv1.bias
+        # Match Architecture (15 channels)
+        original_conv = p_model.features[0][0]
+        p_model.features[0][0] = nn.Conv2d(
+            15, original_conv.out_channels, 
+            kernel_size=original_conv.kernel_size, 
+            stride=original_conv.stride, 
+            padding=original_conv.padding, 
+            bias=original_conv.bias
         )
-        p_model.fc = nn.Linear(p_model.fc.in_features, 71)
+        
+        # Match Classifier
+        num_ftrs = p_model.classifier[1].in_features
+        p_model.classifier[1] = nn.Linear(num_ftrs, 71)
         
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         p_model.load_state_dict(torch.load(MODEL_PTH, map_location=device))
@@ -100,7 +103,7 @@ try:
         p_model.eval()
         
         model_cnn = p_model
-        print("SUCCESS: CNN Loaded.")
+        print("SUCCESS: CNN (EfficientNet-B0) Loaded.")
 except Exception as e:
     print(f"ERROR Loading CNN: {e}")
 
