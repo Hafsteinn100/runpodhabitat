@@ -19,14 +19,15 @@ try:
         print(f"Loading PyTorch Model from {MODEL_PTH}...")
         
         # Re-define architecture (Must match train_efficient.py)
-        # ResNet18 with 15 channels
+        # ResNet34 with 15 channels
         try:
-            from torchvision.models import ResNet18_Weights
-            weights = ResNet18_Weights.DEFAULT
+            from torchvision.models import ResNet34_Weights
+            weights = ResNet34_Weights.DEFAULT
         except:
              weights = 'DEFAULT'
              
-        p_model = models.resnet18(weights=weights)
+        from torchvision.models import resnet34
+        p_model = resnet34(weights=weights)
         original_conv1 = p_model.conv1
         p_model.conv1 = nn.Conv2d(
             in_channels=15, 
@@ -37,8 +38,8 @@ try:
             bias=original_conv1.bias
         )
         
-        # CRITICAL: Match Architecture (Remove MaxPool)
-        p_model.maxpool = nn.Identity()
+        # MaxPool is RESTORED (We used Identity before, now using standard)
+        # p_model.maxpool remains standard.
         
         p_model.fc = nn.Linear(p_model.fc.in_features, 71)
         
