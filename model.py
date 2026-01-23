@@ -36,6 +36,10 @@ try:
             padding=original_conv1.padding, 
             bias=original_conv1.bias
         )
+        
+        # CRITICAL: Match Architecture (Remove MaxPool)
+        p_model.maxpool = nn.Identity()
+        
         p_model.fc = nn.Linear(p_model.fc.in_features, 71)
         
         # Load Weights
