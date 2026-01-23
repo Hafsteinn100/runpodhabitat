@@ -40,37 +40,39 @@ def load_data():
 def augment_data(X, y):
     """
     Applies 'Smart' Augmentation:
-    1. Original Image
-    2. Horizontal Flip (Left-Right)
+    1. Original Image (Flattened)
+    2. Horizontal Flip (Left-Right) (Flattened)
     
-    This doubles the dataset (2x) instead of quadrupling it, saving RAM and time.
+    This doubles the dataset (2x).
     """
     print(f"Original dataset size: {len(X)} images")
-    print("Applying 2x AUGMENTATION (Horizontal Flips only)...")
+    print("Applying 2x AUGMENTATION (Horizontal Flips + Noise)...")
     
     X_aug = []
     y_aug = []
     
+    # Calculate noise scale (approx 2% of standard deviation)
+    # Based on normalization.json: std is ~1208
+    NOISE_SCALE = 25.0 
+    
     for i in range(len(X)):
-        img_flat = X[i]
+        # X[i] is (15, 35, 35)
+        img_3d = X[i]
         label = y[i]
         
-        # Reshape to (15, 15, 300) assuming flattened input
-        # Note: If features are abstract vectors, flip might not represent geometric flip perfectly
-        # but it acts as effective noise injection for regularization.
-        # For pure speed and safety with feature vectors, we will just append the original twice 
-        # with slight noise, OR assume spatial structure.
-        # Let's trust the feature invariance and just duplicate with noise for safety if structure is unknown.
-        
-        # ACTUALLY: Since these are 'patches', let's stick to pure data quality.
-        # We will use the original data + a version with very slight noise to make it robust.
-        
-        X_aug.append(img_flat)
+        # 1. Original (Flattened)
+        X_aug.append(img_3d.ravel())
         y_aug.append(label)
         
-        # Add noise version (Robustness without geometric assumptions)
-        noise = np.random.normal(0, 0.01, img_flat.shape)
-        X_aug.append(img_flat + noise)
+        # 2. Horizontal Flip (preserving spatial structure before flatten)
+        # Shape is (Channels, H, W) -> Flip on last axis (W)
+        img_flipped = np.flip(img_3d, axis=2)
+        
+        # Add slight noise to the flipped version to improve robustness
+        noise = np.random.normal(0, NOISE_SCALE, img_flipped.shape)
+        img_flipped_noisy = img_flipped + noise
+        
+        X_aug.append(img_flipped_noisy.ravel())
         y_aug.append(label)
 
     return np.array(X_aug), np.array(y_aug)
@@ -79,9 +81,10 @@ def train():
     print("--- STARTING SPEEDSTER TRAINING ---")
     
     # 1. Load
-    X, y, df_labels = load_data()
+    X, y, df_labels = load_data() # X is (N, 15, 35, 35)
     
-    # 2. Augment
+    # 2. Augment & Flatten
+    # Returns (N*2, Features)
     X_train, y_train = augment_data(X, y)
     print(f"Final Training Data Shape: {X_train.shape}")
     
@@ -93,14 +96,13 @@ def train():
     print("Initializing Fast Ensemble...")
     
     # Random Forest: Reliable, Parallel (n_jobs=-1 uses all cores)
-    rf = RandomForestClassifier(n_estimators=300, n_jobs=-1, random_state=42)
+    rf = RandomForestClassifier(n_estimators=200, n_jobs=-1, random_state=42)
     
     # Extra Trees: Faster than Random Forest, reduces variance
-    et = ExtraTreesClassifier(n_estimators=300, n_jobs=-1, random_state=42)
+    et = ExtraTreesClassifier(n_estimators=200, n_jobs=-1, random_state=42)
     
     # HistGradientBoosting: The Speed Demon (Sklearn's version of LightGBM)
-    # Much faster than standard GradientBoosting
-    hgb = HistGradientBoostingClassifier(max_iter=100, random_state=42)
+    hgb = HistGradientBoostingClassifier(max_iter=150, random_state=42)
     
     # Voting Classifier: Combines them all
     model = VotingClassifier(
@@ -129,8 +131,8 @@ def train():
     # Since we don't have a test set file here, we assume we are just saving the model
     # or outputting training metrics. 
     
-    # For now, let's just save a dummy submission or accuracy check
-    preds_enc = model.predict(X)
+    # Create submission file (just mapping ids to labels)
+    preds_enc = model.predict(X.reshape(len(X), -1))
     preds = le.inverse_transform(preds_enc)
     
     acc = accuracy_score(y, preds)
