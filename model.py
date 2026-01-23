@@ -22,11 +22,11 @@ def predict(patch):
     if model is None:
         raise RuntimeError("Model is not loaded! Run train_model.py first.")
 
-    # 1. Feature Extraction (Now includes Grid Features!)
-    features = extract_features(patch)
+    # 1. Feature Extraction (MATCHING TRAIN_FAST.PY: FLATTEN)
+    # Patch is (15, 35, 35). Train_fast.py flattens it to (18375,)
     
-    # 2. Reshape for the model (1 sample, many features)
-    features_batch = features.reshape(1, -1)
+    # Reshape for the model (1 sample, many features)
+    features_batch = patch.reshape(1, -1)
     
     # 3. Predict
     prediction = model.predict(features_batch)

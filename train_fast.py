@@ -150,5 +150,10 @@ def train():
     submission.to_csv("submission.csv", index=False)
     print("SUCCESS: Saved submission.csv")
 
+    # 7. Save Model (CRITICAL for API)
+    import joblib
+    joblib.dump(clf, "model.joblib")
+    print("SUCCESS: Saved model.joblib (Ready for API)")
+
 if __name__ == "__main__":
     train()
