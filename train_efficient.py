@@ -20,9 +20,107 @@ NUM_WORKERS = os.cpu_count()  # Maximize data loading speed
 PIN_MEMORY = True if torch.cuda.is_available() else False
 TTA_CYCLES = 4    # Test Time Augmentation (averaged predictions)
 
-# ... (HabitatDataset and load_data remain the same) ...
 
-# ...
+class HabitatDataset(Dataset):
+    def __init__(self, patches: np.ndarray, labels: np.ndarray, transform=None):
+        # Data is already float32. We normalize on the fly or just assume simple scaling.
+        # For speed, we'll do simple scaling here if needed.
+        # Based on stats (mean ~1241, std ~1208), we standardize.
+        self.patches = (patches - 1241.1) / (1208.9 + 1e-6)
+        
+        # Convert to torch tensor (Channels First: N, 15, 35, 35)
+        self.patches = torch.from_numpy(self.patches).float()
+        self.labels = torch.from_numpy(labels).long()
+        self.transform = transform
+        
+    def __len__(self):
+        return len(self.patches)
+    
+    def __getitem__(self, idx):
+        patch = self.patches[idx]
+        label = self.labels[idx]
+        
+        # GPU-friendly Augmentation (doing it here on CPU might be a bottleneck, 
+        # but for simple flips it's fine). 
+        if self.transform:
+            if torch.rand(1) < 0.5:
+                patch = torch.flip(patch, [-1]) # Horizontal
+            if torch.rand(1) < 0.5:
+                patch = torch.flip(patch, [-2]) # Vertical
+            # Random 90-degree rotations
+            k = torch.randint(0, 4, (1,)).item()
+            if k > 0:
+                patch = torch.rot90(patch, k, [-2, -1])
+                
+        return patch, label
+
+def load_data():
+    base_dir = Path(__file__).parent / "data"
+    print("Loading data...")
+    
+    # Robust path finding
+    possible_roots = ["data/train", "data", "."]
+    p1_path = None
+    p2_path = None
+    csv_path = None
+    
+    for root in possible_roots:
+        p1 = base_dir / root / "patches_part1.npy"
+        # Check absolute or relative calc
+        if not p1.exists():
+            # Try treating root as direct path segment if base_dir is weird
+            p1 = Path(root) / "patches_part1.npy"
+            
+        if p1.exists():
+            p1_path = p1
+            # Recalculate p2 based on successful p1 root
+            p2_path = p1.parent / "patches_part2.npy"
+            print(f"Found data in: {p1.parent}")
+            break
+            
+    if p1_path is None:
+        # Last ditch check for raw strings suitable for different OS
+        if os.path.exists("data/train/patches_part1.npy"):
+             p1_path = "data/train/patches_part1.npy"
+             p2_path = "data/train/patches_part2.npy"
+        elif os.path.exists("patches_part1.npy"):
+             p1_path = "patches_part1.npy"
+             p2_path = "patches_part2.npy"
+        else:
+             raise FileNotFoundError("Could not find patches_part1.npy")
+
+    # Finalize paths as Path objects or strings
+    # Load Image Data
+    part1 = np.load(str(p1_path))
+    part2 = np.load(str(p2_path))
+    
+    # Find CSV
+    for root in possible_roots:
+        c = base_dir / root / "train.csv"
+        if not c.exists():
+            c = Path(root) / "train.csv"
+            
+        if c.exists():
+            csv_path = c
+            break
+            
+    if csv_path is None:
+         if os.path.exists("train.csv"):
+             csv_path = "train.csv"
+         else:
+             raise FileNotFoundError("Could not find train.csv")
+    
+    part1 = np.load(p1_path)
+    part2 = np.load(p2_path)
+    patches = np.concatenate([part1, part2], axis=0)
+    
+    labels_df = pd.read_csv(csv_path)
+    # Using the corrected column name
+    labels = labels_df["vistgerd_idx"].values
+        
+    print(f"Data shape: {patches.shape}, Labels: {labels.shape}")
+    return patches, labels
+
 
 def get_model(num_classes=71):
     # Load ResNet18 (lightweight, standard)
