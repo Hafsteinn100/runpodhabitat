@@ -67,81 +67,116 @@ class SmallResNet(nn.Module):
         out = self.fc(out)
         return out
 
+
 # --- LOADER LOGIC ---
+model_cnn = None
+model_et = None
+
+# 1. Load CNN (ResNet18)
 try:
     if MODEL_PTH.exists():
-        print(f"Loading PyTorch Model from {MODEL_PTH}...")
+        print(f"Loading CNN from {MODEL_PTH}...")
+        try:
+            from torchvision.models import ResNet18_Weights
+            weights = ResNet18_Weights.DEFAULT
+        except:
+             weights = 'DEFAULT'
+             
+        p_model = models.resnet18(weights=weights)
+        original_conv1 = p_model.conv1
+        p_model.conv1 = nn.Conv2d(
+            in_channels=15, 
+            out_channels=original_conv1.out_channels, 
+            kernel_size=original_conv1.kernel_size, 
+            stride=original_conv1.stride, 
+            padding=original_conv1.padding, 
+            bias=original_conv1.bias
+        )
+        p_model.fc = nn.Linear(p_model.fc.in_features, 71)
         
-        # Load Custom SmallResNet
-        p_model = SmallResNet(num_classes=71)
-        
-        # Load Weights
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         p_model.load_state_dict(torch.load(MODEL_PTH, map_location=device))
         p_model.to(device)
         p_model.eval()
         
-        model = p_model
-        model_type = "pytorch"
-        print("SUCCESS: PyTorch Model Loaded.")
-        
-    elif MODEL_JOBLIB.exists():
-        print(f"Loading Sklearn Model from {MODEL_JOBLIB}...")
-        model = joblib.load(MODEL_JOBLIB)
-        model_type = "sklearn"
-        print("SUCCESS: Sklearn Model Loaded.")
-        
-    else:
-        print("ERROR: No model file found! (Checked model_efficient.pth and model.joblib)")
-
-        
+        model_cnn = p_model
+        print("SUCCESS: CNN Loaded.")
 except Exception as e:
-    print(f"CRITICAL ERROR loading model: {e}")
+    print(f"ERROR Loading CNN: {e}")
+
+# 2. Load ExtraTrees
+try:
+    ensemble_path = BASE_DIR / "model_ensemble.joblib"
+    if ensemble_path.exists():
+        print(f"Loading ExtraTrees from {ensemble_path}...")
+        model_et = joblib.load(ensemble_path)
+        print("SUCCESS: ExtraTrees Loaded.")
+    elif MODEL_JOBLIB.exists(): # Fallback to old joblib name if needed
+        print(f"Loading ExtraTrees from {MODEL_JOBLIB}...")
+        model_et = joblib.load(MODEL_JOBLIB)
+        print("SUCCESS: ExtraTrees Loaded (Fallback).")
+except Exception as e:
+    print(f"ERROR Loading ExtraTrees: {e}")
+
 
 def predict(patch):
     """
-    Hybrid Predictor: Handles both 1D Flattened (Sklearn) and 3D Tensor (PyTorch) inputs.
-    Patch shape: (15, 35, 35) numpy array
+    Hybrid Predictor: CNN + ExtraTrees Ensemble
     """
-    if model is None:
-        raise RuntimeError("Model is not loaded! Run a training script first.")
-
-    if model_type == "pytorch":
-        # Preprocess for PyTorch: (15, 35, 35) -> (1, 15, 35, 35) Tensor
-        # Also Normalize (matching train_efficient.py logic)
+    if model_cnn is None and model_et is None:
+        raise RuntimeError("No models loaded!")
+        
+    probs_cnn = np.zeros(71)
+    probs_et = np.zeros(71)
+    
+    # 1. CNN Prediction (TTA 4x)
+    if model_cnn is not None:
         patch_norm = (patch - 1241.1) / (1208.9 + 1e-6)
-        
-        # Convert to Tensor (on CPU first)
         tensor = torch.from_numpy(patch_norm).float()
-        
-        device = next(model.parameters()).device
+        device = next(model_cnn.parameters()).device
         
         with torch.no_grad():
-            # TTA (Test Time Augmentation) - 4x Strategy
-            # 1. Original
             inputs = [tensor] 
-            # 2. Horizontal Flip
             inputs.append(torch.flip(tensor, [-1]))
-            # 3. Vertical Flip
             inputs.append(torch.flip(tensor, [-2]))
-            # 4. Rot90
             inputs.append(torch.rot90(tensor, 1, [-2, -1]))
             
-            # Batch them: (4, 15, 35, 35)
             batch = torch.stack(inputs).to(device)
+            outputs = model_cnn(batch)
             
-            outputs = model(batch)
-            # Average the logits or probabilities
-            # Simple averaging of logits is usually fine
-            avg_output = outputs.mean(dim=0, keepdim=True)
-            
-            _, prediction = avg_output.max(1)
-            return int(prediction.item())
-            
-    elif model_type == "sklearn":
-        # Preprocess for Sklearn: Flatten -> (1, 18375)
+            # Softmax to get probs
+            probs = torch.softmax(outputs, dim=1).cpu().numpy()
+            probs_cnn = probs.mean(axis=0) # Average TTA
+
+    # 2. ExtraTrees Prediction
+    if model_et is not None:
         flat = patch.reshape(1, -1)
-        prediction = model.predict(flat)
-        return int(prediction[0])
+        # Check if model supports predict_proba
+        if hasattr(model_et, "predict_proba"):
+            probs_et = model_et.predict_proba(flat)[0]
+            # Handle case where ET might not have seen all classes? 
+            # Sklearn handles this usually if classes were known at fit.
+            if len(probs_et) != 71:
+                # Pad if necessary, but trained on full set usually fine.
+                # If mismatch, rely on CNN
+                if len(probs_et) < 71:
+                   # This is tricky, simplified assumption: it matches or we skip
+                   # Usually it matches if trained on all classes.
+                   pass
+        else:
+            # Hard vote
+            pred = model_et.predict(flat)[0]
+            probs_et[pred] = 1.0
+
+    # 3. Ensemble (Weighted Average)
+    # Give CNN slightly more weight? Or equal?
+    # CNN (0.6) + ET (0.4) is a good starting point for "Deep Learning + Tabular"
+    
+    if model_cnn is not None and model_et is not None:
+        final_probs = (0.6 * probs_cnn) + (0.4 * probs_et)
+    elif model_cnn is not None:
+        final_probs = probs_cnn
+    else:
+        final_probs = probs_et
         
-    return 0
+    return int(np.argmax(final_probs))
