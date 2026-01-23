@@ -1,269 +1,156 @@
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-import numpy as np
-import pandas as pd
-from pathlib import Path
-import copy
-import time
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
 import os
-import torchvision.models as models
-from torch.cuda.amp import autocast, GradScaler
 
-# --- CONFIGURATION (optimized for speed/accuracy) ---
-BATCH_SIZE = 128
-EPOCHS = 100      # Optimized: 100 epochs for full convergence (still fast)
+# --- CONFIGURATION ---
+BATCH_SIZE = 64
+EPOCHS = 30
 LEARNING_RATE = 0.001
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-NUM_WORKERS = os.cpu_count()
-PIN_MEMORY = True if torch.cuda.is_available() else False
-TTA_CYCLES = 4
 
-class HabitatDataset(Dataset):
-    def __init__(self, patches: np.ndarray, labels: np.ndarray, transform=None):
-        self.patches = (patches - 1241.1) / (1208.9 + 1e-6)
+# --- MODEL DEFINITION (Custom CNN for 15 Channels) ---
+class SatelliteCNN(nn.Module):
+    def __init__(self, num_classes=10):
+        super(SatelliteCNN, self).__init__()
         
-        self.patches = torch.from_numpy(self.patches).float()
-        self.labels = torch.from_numpy(labels).long()
-        self.transform = transform
-        
-    def __len__(self):
-        return len(self.patches)
-    
-    def __getitem__(self, idx):
-        patch = self.patches[idx]
-        label = self.labels[idx]
-        
-        if self.transform:
-            # Standard Augmentation (Tried & True for high accuracy)
-            if torch.rand(1) < 0.5:
-                patch = torch.flip(patch, [-1])
-            if torch.rand(1) < 0.5:
-                patch = torch.flip(patch, [-2])
+        # Input: 15 channels, 35x35 image
+        self.features = nn.Sequential(
+            nn.Conv2d(15, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(2), # -> 17x17
             
-            k = torch.randint(0, 4, (1,)).item()
-            if k > 0:
-                patch = torch.rot90(patch, k, [-2, -1])
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.MaxPool2d(2), # -> 8x8
             
-        return patch, label
-
-def load_data():
-    base_dir = Path(__file__).parent / "data"
-    print("Loading data...")
-    
-    possible_roots = ["data/train", "data", "."]
-    p1_path = None
-    p2_path = None
-    csv_path = None
-    
-    for root in possible_roots:
-        p1 = base_dir / root / "patches_part1.npy"
-        if not p1.exists():
-            p1 = Path(root) / "patches_part1.npy"
-        if p1.exists():
-            p1_path = p1
-            p2_path = p1.parent / "patches_part2.npy"
-            print(f"Found data in: {p1.parent}")
-            break
-            
-    if p1_path is None:
-        if os.path.exists("data/train/patches_part1.npy"):
-             p1_path = "data/train/patches_part1.npy"
-             p2_path = "data/train/patches_part2.npy"
-        elif os.path.exists("patches_part1.npy"):
-             p1_path = "patches_part1.npy"
-             p2_path = "patches_part2.npy"
-        else:
-             raise FileNotFoundError("Could not find patches_part1.npy")
-
-    # Finalize paths as Path objects or strings
-    part1 = np.load(str(p1_path))
-    part2 = np.load(str(p2_path))
-    
-    for root in possible_roots:
-        c = base_dir / root / "train.csv"
-        if not c.exists():
-            c = Path(root) / "train.csv"
-        if c.exists():
-            csv_path = c
-            break
-            
-    if csv_path is None:
-         if os.path.exists("train.csv"):
-             csv_path = "train.csv"
-         else:
-             raise FileNotFoundError("Could not find train.csv")
-    
-    part1 = np.load(p1_path)
-    part2 = np.load(p2_path)
-    patches = np.concatenate([part1, part2], axis=0)
-    
-    labels_df = pd.read_csv(csv_path)
-    labels = labels_df["vistgerd_idx"].values
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((1, 1)) # -> 1x1
+        )
         
-    print(f"Data shape: {patches.shape}, Labels: {labels.shape}")
-    return patches, labels
-
-
-# --- CUSTOM ARCHITECTURE FOR SMALL IMAGES (CIFAR-STYLE) ---
-class ResidualBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1):
-        super(ResidualBlock, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-        
-        self.shortcut = nn.Sequential()
-        if stride != 1 or in_channels != out_channels:
-            self.shortcut = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(out_channels)
-            )
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(128, num_classes)
+        )
 
     def forward(self, x):
-        out = torch.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        out += self.shortcut(x)
-        out = torch.relu(out)
-        return out
+        x = self.features(x)
+        x = self.classifier(x)
+        return x
 
-class SmallResNet(nn.Module):
-    def __init__(self, num_classes=71):
-        super(SmallResNet, self).__init__()
-        # Initial: 3x3 conv, stride 1 (Preserve 35x35)
-        # 15 input channels
-        self.conv1 = nn.Conv2d(15, 64, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(64)
-        
-        # Stage 1: 64 channels, 35x35
-        self.layer1 = self._make_layer(64, 64, 2, stride=1)
-        
-        # Stage 2: 128 channels, 18x18 (stride 2)
-        self.layer2 = self._make_layer(64, 128, 2, stride=2)
-        
-        # Stage 3: 256 channels, 9x9 (stride 2)
-        self.layer3 = self._make_layer(128, 256, 2, stride=2)
-        
-        # Stage 4: 512 channels, 5x5 (stride 2)
-        self.layer4 = self._make_layer(256, 512, 2, stride=2)
-        
-        self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(512, num_classes)
+def load_and_preprocess():
+    print("Loading Data...")
+    # Load Train
+    X_part1 = np.load("data/train/patches_part1.npy")
+    X_part2 = np.load("data/train/patches_part2.npy")
+    X_train = np.concatenate([X_part1, X_part2], axis=0)
+    
+    # Load Labels
+    df_train = pd.read_csv("data/train/train.csv")
+    y_train_raw = df_train['label'].values
+    
+    # Load Test
+    X_test = np.load("data/test/patches_test.npy")
+    df_test = pd.read_csv("data/test/test.csv")
+    
+    # --- CRITICAL: NORMALIZATION ---
+    # Sentinel data is 12-bit (0-4096+). Neural nets need 0-1.
+    print("Normalizing data (Dividing by 10000)...")
+    X_train = np.clip(X_train.astype(np.float32) / 10000.0, 0, 1)
+    X_test = np.clip(X_test.astype(np.float32) / 10000.0, 0, 1)
 
-    def _make_layer(self, in_channels, out_channels, num_blocks, stride):
-        layers = []
-        layers.append(ResidualBlock(in_channels, out_channels, stride))
-        for _ in range(1, num_blocks):
-            layers.append(ResidualBlock(out_channels, out_channels, stride=1))
-        return nn.Sequential(*layers)
+    # Encode Labels
+    le = LabelEncoder()
+    y_train_enc = le.fit_transform(y_train_raw)
+    
+    return X_train, y_train_enc, X_test, df_test, le
 
-    def forward(self, x):
-        out = torch.relu(self.bn1(self.conv1(x)))
-        out = self.layer1(out)
-        out = self.layer2(out)
-        out = self.layer3(out)
-        out = self.layer4(out)
-        out = self.avg_pool(out)
-        out = out.view(out.size(0), -1)
-        out = self.fc(out)
-        return out
+def train_model():
+    X, y, X_test, df_test, le = load_and_preprocess()
+    
+    # Split for validation
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.1, random_state=42)
 
-def get_model(num_classes=71):
-    return SmallResNet(num_classes)
+    # Convert to Tensors
+    train_dataset = TensorDataset(torch.tensor(X_train), torch.tensor(y_train))
+    val_dataset = TensorDataset(torch.tensor(X_val), torch.tensor(y_val))
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
 
-
-def train():
-    print(f"--- STARTING EFFICIENT TRAINING (Device: {DEVICE}) ---")
-    print(f"--- CONFIG: Custom SmallResNet (CIFAR-Style), Epochs={EPOCHS}, TTA={TTA_CYCLES}x ---")
-    
-    patches, labels = load_data()
-    
-    dataset_size = len(patches)
-    indices = np.arange(dataset_size)
-    np.random.shuffle(indices)
-    
-    split = int(0.8 * dataset_size)
-    train_indices = indices[:split]
-    val_indices = indices[split:]
-    
-    train_dataset = HabitatDataset(patches[train_indices], labels[train_indices], transform=True)
-    val_dataset = HabitatDataset(patches[val_indices], labels[val_indices], transform=False)
-    
-    train_loader = DataLoader(
-        train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
-        num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY
-    )
-    val_loader = DataLoader(
-        val_dataset, batch_size=BATCH_SIZE, shuffle=False, 
-        num_workers=NUM_WORKERS, pin_memory=PIN_MEMORY
-    )
-    
-    model = get_model(num_classes=71).to(DEVICE)
-    
-    optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-2)
-    scheduler = optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=LEARNING_RATE, steps_per_epoch=len(train_loader), epochs=EPOCHS
-    )
-    
-    # Standard CrossEntropy (No LabelSmoothing - aiming for sharp fit)
+    # Initialize
+    model = SatelliteCNN(num_classes=len(le.classes_)).to(DEVICE)
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
     criterion = nn.CrossEntropyLoss()
-    scaler = GradScaler() 
-    
+
+    print(f"Starting Training on {DEVICE}...")
     best_acc = 0.0
-    start_time = time.time()
-    
+
     for epoch in range(EPOCHS):
         model.train()
-        running_loss = 0.0
+        for images, labels in train_loader:
+            images, labels = images.to(DEVICE), labels.to(DEVICE)
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+        
+        # Validation
+        model.eval()
         correct = 0
         total = 0
-        
-        for inputs, targets in train_loader:
-            inputs, targets = inputs.to(DEVICE, non_blocking=True), targets.to(DEVICE, non_blocking=True)
-            
-            optimizer.zero_grad()
-            with autocast():
-                outputs = model(inputs)
-                loss = criterion(outputs, targets)
-            
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-            scheduler.step()
-            
-            running_loss += loss.item() * inputs.size(0)
-            _, predicted = outputs.max(1)
-            total += targets.size(0)
-            correct += predicted.eq(targets).sum().item()
-            
-        epoch_loss = running_loss / len(train_dataset)
-        epoch_acc = 100. * correct / total
-        
-        model.eval()
-        val_correct = 0
-        val_total = 0
         with torch.no_grad():
-            for inputs, targets in val_loader:
-                inputs, targets = inputs.to(DEVICE, non_blocking=True), targets.to(DEVICE, non_blocking=True)
-                outputs = model(inputs)
-                _, predicted = outputs.max(1)
-                val_total += targets.size(0)
-                val_correct += predicted.eq(targets).sum().item()
+            for images, labels in val_loader:
+                images, labels = images.to(DEVICE), labels.to(DEVICE)
+                outputs = model(images)
+                _, predicted = torch.max(outputs.data, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
         
-        val_acc = 100. * val_correct / val_total
+        acc = 100 * correct / total
+        print(f"Epoch [{epoch+1}/{EPOCHS}] - Val Accuracy: {acc:.2f}%")
         
-        elapsed = (time.time() - start_time) / 60
-        print(f"Epoch {epoch+1}/{EPOCHS} [{elapsed:.1f}m] | Loss: {epoch_loss:.4f} | Acc: {epoch_acc:.2f}% | Val Acc: {val_acc:.2f}%")
+        if acc > best_acc:
+            best_acc = acc
+            torch.save(model.state_dict(), "best_model.pth")
+
+    # --- PREDICTION WITH TTA (Test Time Augmentation) ---
+    print("\nGenerating Test Predictions with TTA...")
+    model.load_state_dict(torch.load("best_model.pth", map_location=DEVICE)) # Load best weights
+    model.eval()
+    
+    X_test_tensor = torch.tensor(X_test).to(DEVICE)
+    
+    with torch.no_grad():
+        # 1. Original
+        outputs_orig = torch.softmax(model(X_test_tensor), dim=1).cpu().numpy()
         
-        if val_acc > best_acc:
-            best_acc = val_acc
-            torch.save(model.state_dict(), "model_efficient.pth")
-            
-    total_time = (time.time() - start_time) / 60
-    print(f"DONE! Total time: {total_time:.1f} minutes. Best Val Acc: {best_acc:.2f}%")
-    print("Model saved to model_efficient.pth")
+        # 2. Horizontal Flip
+        X_flip = torch.flip(X_test_tensor, [3]) # Flip width dim
+        outputs_flip = torch.softmax(model(X_flip), dim=1).cpu().numpy()
+        
+        # 3. Vertical Flip
+        X_vflip = torch.flip(X_test_tensor, [2]) # Flip height dim
+        outputs_vflip = torch.softmax(model(X_vflip), dim=1).cpu().numpy()
+
+    # Average the probabilities
+    final_probs = (outputs_orig + outputs_flip + outputs_vflip) / 3.0
+    
+    # Save Probabilities for Ensemble
+    np.save("probs_efficient.npy", final_probs)
+    print("Saved 'probs_efficient.npy' for ensemble.")
 
 if __name__ == "__main__":
-    train()
+    train_model()
