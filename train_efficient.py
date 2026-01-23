@@ -52,24 +52,34 @@ class SatelliteCNN(nn.Module):
 
 def load_and_preprocess():
     print("Loading Data...")
-    # Load Train
-    X_part1 = np.load("data/train/patches_part1.npy")
-    X_part2 = np.load("data/train/patches_part2.npy")
+    # Load Train (Corrected Paths: data/ instead of data/train/)
+    X_part1 = np.load("data/patches_part1.npy")
+    X_part2 = np.load("data/patches_part2.npy")
     X_train = np.concatenate([X_part1, X_part2], axis=0)
     
     # Load Labels
-    df_train = pd.read_csv("data/train/train.csv")
+    df_train = pd.read_csv("data/train.csv")
     y_train_raw = df_train['label'].values
     
-    # Load Test
-    X_test = np.load("data/test/patches_test.npy")
-    df_test = pd.read_csv("data/test/test.csv")
+    # Load Test (Handle missing file)
+    if os.path.exists("data/test/patches_test.npy"):
+        X_test = np.load("data/test/patches_test.npy")
+        df_test = pd.read_csv("data/test/test.csv")
+    elif os.path.exists("data/patches_test.npy"): # Try root data dir
+        X_test = np.load("data/patches_test.npy")
+        df_test = pd.read_csv("data/test.csv") # Assumption
+    else:
+        print("WARNING: Test data not found. Skipping test loading.")
+        X_test = None
+        df_test = None
     
     # --- CRITICAL: NORMALIZATION ---
     # Sentinel data is 12-bit (0-4096+). Neural nets need 0-1.
     print("Normalizing data (Dividing by 10000)...")
     X_train = np.clip(X_train.astype(np.float32) / 10000.0, 0, 1)
-    X_test = np.clip(X_test.astype(np.float32) / 10000.0, 0, 1)
+    
+    if X_test is not None:
+        X_test = np.clip(X_test.astype(np.float32) / 10000.0, 0, 1)
 
     # Encode Labels
     le = LabelEncoder()
