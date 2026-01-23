@@ -13,7 +13,7 @@ from torch.cuda.amp import autocast, GradScaler
 
 # --- CONFIGURATION (optimized for speed/accuracy) ---
 BATCH_SIZE = 128
-EPOCHS = 50
+EPOCHS = 100      # Optimized: 100 epochs for full convergence (still fast)
 LEARNING_RATE = 0.001
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 NUM_WORKERS = os.cpu_count()
@@ -36,23 +36,15 @@ class HabitatDataset(Dataset):
         label = self.labels[idx]
         
         if self.transform:
-            # Stronger Augmentation Strategy
-            # 1. Flips
+            # Standard Augmentation (Tried & True for high accuracy)
             if torch.rand(1) < 0.5:
                 patch = torch.flip(patch, [-1])
             if torch.rand(1) < 0.5:
                 patch = torch.flip(patch, [-2])
             
-            # 2. Rotations (90 deg)
             k = torch.randint(0, 4, (1,)).item()
             if k > 0:
                 patch = torch.rot90(patch, k, [-2, -1])
-                
-            # 3. Fine Affine (Rotation +/- 15, Scale 0.9-1.1) - simulated
-            # Doing full affine on tensors without torchvision.transforms.functional is tricky roughly
-            # but we can rely on cutmix or just strict geometry. 
-            # Let's stick to simple geometry for speed, but add Cutout/Dropout logic?
-            # Actually, let's keep it simple. The ResNet34 capacity is the main driver + LabelSmoothing.
             
         return patch, label
 
@@ -114,16 +106,14 @@ def load_data():
     return patches, labels
 
 def get_model(num_classes=71):
-    # UPGRADE: ResNet34 (Deeper, better features)
+    # BACK TO RESNET18 (Best performance so far: 80%)
     try:
-        from torchvision.models import ResNet34_Weights
-        weights = ResNet34_Weights.DEFAULT
+        from torchvision.models import ResNet18_Weights
+        weights = ResNet18_Weights.DEFAULT
     except ImportError:
         weights = 'DEFAULT'
         
-    # Switch to ResNet34
-    from torchvision.models import resnet34
-    model = resnet34(weights=weights)
+    model = models.resnet18(weights=weights)
     
     # MODIFY FIRST LAYER: Accept 15 channels
     original_conv1 = model.conv1
@@ -138,8 +128,7 @@ def get_model(num_classes=71):
     
     nn.init.kaiming_normal_(model.conv1.weight, mode='fan_out', nonlinearity='relu')
     
-    # RESTORED MAXPOOL (Removing it hurt performance)
-    # Standard ResNet downsampling is robust.
+    # Standard MaxPool (Performance critical)
     
     # MODIFY FINAL LAYER
     num_ftrs = model.fc.in_features
@@ -149,7 +138,7 @@ def get_model(num_classes=71):
 
 def train():
     print(f"--- STARTING EFFICIENT TRAINING (Device: {DEVICE}) ---")
-    print(f"--- CONFIG: ResNet34, Epochs={EPOCHS}, LabelSmoothing=0.1 ---")
+    print(f"--- CONFIG: ResNet18 (Best), Epochs={EPOCHS}, MaxPool=ON ---")
     
     patches, labels = load_data()
     
@@ -180,8 +169,8 @@ def train():
         optimizer, max_lr=LEARNING_RATE, steps_per_epoch=len(train_loader), epochs=EPOCHS
     )
     
-    # UPGRADE: Label Smoothing (Helps generalization significantly)
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    # Standard CrossEntropy (No LabelSmoothing - aiming for sharp fit)
+    criterion = nn.CrossEntropyLoss()
     scaler = GradScaler() 
     
     best_acc = 0.0

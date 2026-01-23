@@ -19,15 +19,14 @@ try:
         print(f"Loading PyTorch Model from {MODEL_PTH}...")
         
         # Re-define architecture (Must match train_efficient.py)
-        # ResNet34 with 15 channels
+        # ResNet18 (Reverted from ResNet34)
         try:
-            from torchvision.models import ResNet34_Weights
-            weights = ResNet34_Weights.DEFAULT
+            from torchvision.models import ResNet18_Weights
+            weights = ResNet18_Weights.DEFAULT
         except:
              weights = 'DEFAULT'
              
-        from torchvision.models import resnet34
-        p_model = resnet34(weights=weights)
+        p_model = models.resnet18(weights=weights)
         original_conv1 = p_model.conv1
         p_model.conv1 = nn.Conv2d(
             in_channels=15, 
@@ -38,8 +37,7 @@ try:
             bias=original_conv1.bias
         )
         
-        # MaxPool is RESTORED (We used Identity before, now using standard)
-        # p_model.maxpool remains standard.
+        # MaxPool is STANDARD (Verified 80% config)
         
         p_model.fc = nn.Linear(p_model.fc.in_features, 71)
         
@@ -78,14 +76,31 @@ def predict(patch):
         # Also Normalize (matching train_efficient.py logic)
         patch_norm = (patch - 1241.1) / (1208.9 + 1e-6)
         
-        tensor = torch.from_numpy(patch_norm).float().unsqueeze(0)
+        # Convert to Tensor (on CPU first)
+        tensor = torch.from_numpy(patch_norm).float()
         
         device = next(model.parameters()).device
-        tensor = tensor.to(device)
         
         with torch.no_grad():
-            outputs = model(tensor)
-            _, prediction = outputs.max(1)
+            # TTA (Test Time Augmentation) - 4x Strategy
+            # 1. Original
+            inputs = [tensor] 
+            # 2. Horizontal Flip
+            inputs.append(torch.flip(tensor, [-1]))
+            # 3. Vertical Flip
+            inputs.append(torch.flip(tensor, [-2]))
+            # 4. Rot90
+            inputs.append(torch.rot90(tensor, 1, [-2, -1]))
+            
+            # Batch them: (4, 15, 35, 35)
+            batch = torch.stack(inputs).to(device)
+            
+            outputs = model(batch)
+            # Average the logits or probabilities
+            # Simple averaging of logits is usually fine
+            avg_output = outputs.mean(dim=0, keepdim=True)
+            
+            _, prediction = avg_output.max(1)
             return int(prediction.item())
             
     elif model_type == "sklearn":
