@@ -15,7 +15,7 @@ def train_rf():
     X = np.concatenate([X_part1, X_part2], axis=0)
     
     df_train = pd.read_csv("data/train.csv")
-    y = df_train['label'].values
+    y = df_train['vistgerd_idx'].values
     
     # Flatten for RF
     X_flat = X.reshape(X.shape[0], -1)
