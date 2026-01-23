@@ -59,7 +59,7 @@ def load_and_preprocess():
     
     # Load Labels
     df_train = pd.read_csv("data/train.csv")
-    y_train_raw = df_train['label'].values
+    y_train_raw = df_train['vistgerd_idx'].values
     
     # Load Test (Handle missing file)
     if os.path.exists("data/test/patches_test.npy"):
